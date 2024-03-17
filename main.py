@@ -1,11 +1,13 @@
-from flask import Flask, flash,jsonify, request, redirect, url_for
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String
+from flask import Flask, request
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, text
 import pandas as pd
-import csv, os, json
-import numpy as np
+import os, json
 import urllib
 import pyodbc
+import configparser
 
+config = configparser.ConfigParser()
+config.read('config.ini')
 app = Flask(__name__)
 
 ALLOWED_EXTENTIONS = {'csv'}
@@ -20,13 +22,24 @@ def allowed_file(filename):
 
 def create_engine_connection_string():
   #Create a SQLAlchemy Engine
-  params = urllib.parse.quote_plus('Driver={ODBC Driver 18 for SQL Server};Server=tcp:srv70903775.database.windows.net,1433;Database=db70903775;Uid=adminchallenge;Pwd=passLu15;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
+  #params = urllib.parse.quote_plus('Driver={ODBC Driver 18 for SQL Server};Server=tcp:srv70903775.database.windows.net,1433;Database=db70903775;Uid=adminchallenge;Pwd=passLu15;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
+  connectionstring = "Driver={driver};Server=tcp:{server},{port};Database={database};Uid={username};Pwd={password};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"\
+  .format(
+          driver = "{"+str(config['database']['driver'])+"}",
+          server = str(config['database']['server']),
+          port = str(config['database']['port']),
+          database = str(config['database']['database']),
+          username = str(config['database']['username']),
+          password = str(config['database']['password'])
+         )
+  params = urllib.parse.quote_plus(connectionstring)
+
   conn_str = 'mssql+pyodbc:///?odbc_connect={}'.format(params)
   return create_engine(conn_str,echo=True)
 
-def run_sql_query(engine,query):
+def run_sql_query(engine,query,param):
   with engine.connect() as connection:
-    result = connection.execute(query)
+    result = connection.execute(text(query),param)
     query_result = result.fetchall()
   
   # Convert query result to JSON
@@ -109,9 +122,9 @@ def upload_departments():
                   )
 
   # Insert the DataFrame into the Azure SQL database
-  department_df.to_sql(name='departments', con=engine, if_exists='replace', index=False)
-  jobs_df.to_sql(name='jobs', con=engine, if_exists='replace', index=False)
-  hired_employees_df.to_sql(name='employees', con=engine, if_exists='replace', index=False)
+  department_df.to_sql(name='departments', con=engine, if_exists='replace', index=False,chunksize=50)
+  jobs_df.to_sql(name='jobs', con=engine, if_exists='replace', index=False,chunksize=50)
+  hired_employees_df.to_sql(name='employees', con=engine, if_exists='replace', index=False,chunksize=50)
 
   # Create the table in the database
   metadata.create_all(engine)  
@@ -122,7 +135,8 @@ def upload_departments():
     #file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
     #return redirect(url_for('download_file', name=filename))
 
-@app.route("/api/employees_hired_quarter/<year>")
+@app.route('/api/employees_hired_quarter', defaults={'year': 2021})
+@app.route('/api/employees_hired_quarter/<int:year>')
 def get_employees_hired_per_quarter(year):
  
   engine = create_engine_connection_string()
@@ -140,50 +154,48 @@ def get_employees_hired_per_quarter(year):
     ON e.job_id = j.id
     INNER JOIN departments d
     ON e.department_id = d.id
-    WHERE YEAR(e.datetime) = 2021
+    WHERE YEAR(e.datetime) = :year
     GROUP BY d.department,j.job
     ORDER BY d.department, j.job ASC
   """
 
-  json_result = run_sql_query(engine,query)
+  json_result = run_sql_query(engine,query,{"year": year})
 
   return json_result,200
-
-@app.route("/api/employees_by_department/<mean_year_ref>")
+@app.route('/api/employees_by_department',defaults={'mean_year_ref': 2021})
+@app.route('/api/employees_by_department/<int:mean_year_ref>')
 def employees_by_department(mean_year_ref):
  
   engine = create_engine_connection_string()
 
   query = """
-  SELECT 
+  DECLARE @mean_2021 INT 
+SELECT 
+@mean_2021 = AVG(x.cant)
+FROM (
+	SELECT
+	department_id,
+	COUNT(1) AS cant
+	FROM employees
+	WHERE YEAR(datetime) = :mean_year_ref
+	AND department_id <> 0
+	GROUP BY department_id
+) x
+SELECT 
   d.id as id,
   d.department as department,
   COUNT(1) as hired
-  FROM employees e 
+  FROM employees e
   INNER JOIN departments d
   ON e.department_id = d.id
   GROUP BY d.id, d.department
+  HAVING COUNT(1) > @mean_2021
+  ORDER BY COUNT(1) DESC
   """
 
-  json_result = run_sql_query(engine,query)
+  json_result = run_sql_query(engine,query,{'mean_year_ref' : mean_year_ref})
 
   return json_result,200
-
-@app.route("/users/<user_id>")
-def get_user(user_id):
-  user = {"id": user_id, "name": "test", "telefono": "999-555-333"}
-  # /users/2654?query=query_test
-  query = request.args.get("query")
-
-  if query:
-    user["query"] = query
-  return jsonify(user), 200
-
-app.route('/users', methods=['POST'])
-def create_user():
-  data = request.get_json()
-  data["status"] = "User created"
-  return jsonify(data), 201
 
 
 if __name__ == '__main__':
