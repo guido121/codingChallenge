@@ -1,0 +1,25 @@
+version: "1.7"
+
+services:
+  coding_challenge_backend:
+    pull_policy: build
+    build: .
+    container_name: coding_challenge_backend
+    restart: unless-stopped
+    ports:
+      - ${PORT}:5000
+    volumes:
+      - ./project:/app
+    environment:
+      - DB_DRIVER=${DB_DRIVER}
+      - DB_SERVER=${DB_SERVER}
+      - DB_PORT=${DB_PORT}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+    networks:
+      - coding_challenge
+networks:
+  coding_challenge:
+    name: coding_challenge
+    driver: bridge
